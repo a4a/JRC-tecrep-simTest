@@ -1,0 +1,381 @@
+\documentclass[a4paper]{article}
+\usepackage{geometry}
+\usepackage{float}
+\usepackage{longtable}
+\usepackage{amsmath}
+\usepackage[bottom]{footmisc}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{cite}
+\usepackage{color} 
+\usepackage{setspace} 
+\usepackage[labelfont=bf,labelsep=period,justification=raggedright]{caption}
+\geometry{verbose,a4paper,tmargin=3cm,bmargin=2cm,lmargin=2cm,rmargin=3cm}
+\setlength{\parskip}{\medskipamount}
+\setlength{\parindent}{0pt}
+\bibliographystyle{plos2009}
+
+\begin{document}
+\title{a4a assessment model simulation testing}
+\author{Jardim, E., Millar, C., Ferretti, M., Mosqueira, I., Osio, C. and Scott, F.}
+%\affiliations{Maritime Affairs unit, Institute for the Protection and Security of the Citizen, European Commission Joint Research Centre, Ispra, Varese, Italy}
+
+\maketitle
+\pagebreak
+\tableofcontents
+\pagebreak
+
+\newpage
+\section{Introduction}
+
+Simulation testing provides information about the performance of the model in specific circumstances, which is a major source of information for analysts. Informing about regions of the parameters space that may require more attention in order to overcome problems that surfaced during testing phase. Simulation testing \emph{Per se} does not cover the full range of situations that may occur, these are a lot wider than it's possible to simulate. The simulation environment does allow a controlled experiment to be carried out which gives information about the capacity of the model to reconstruct the underlying reality under specific conditions. Furthermore, these simulation studies allows testing the adjustment of models without much human intervention (automatic adjustments), a major objective of the framework developed here.
+
+To run the simulation study the following algorithm was applied:
+\begin{enumerate}
+	\item Use information about life history traits of several fish stocks to build coherent population dynamics under no-exploitation scenario.
+	\item Simulate for each stock a 50 year exploitation history based on the common development-over exploitation-recovery pattern.
+	\item Trim the simulations in four 15 year periods, generating a range of exploitation patterns that are commonly observed in global fisheries: (i) "development" - from non-exploited fisheries up to over-exploitation, (ii) "development plus over-exploitation" - five years of increasing fishing mortality and 10 years of over-exploitation, (iii) "over-exploitation" - 15 years of stable fishing mortality at over-exploitation levels, and (iv) "recovery" - 5 years of over-exploitation and 10 years decreasing fishing mortality down to the maximum sustainable yield (MSY) fishing mortality.
+	\item Add observation error in abundance indices considering several assumptions about catchability and independent lognormal errors with several levels of variability.
+	\item Add observation error in catch in numbers at age in the form of independent lognormal errors with several levels of variability.
+	\item Fit a random assessment model to each simulation by selecting the sub-models from a set of three distinct F models, five distinct Q models and two distinct R models.
+	\item Compute performance statistics.
+\end{enumerate}
+
+The approach taken regarding the population dynamics does not try to simulate exactly specific species, it aims to simulate stocks and exploitation histories that are consistent with population dynamics theory and loosely based on the biology of the species, so that a large range of life histories traits and commercial exploitation patterns are considered.     
+
+For this simulation exercise, life history parameters were extracted from FishBase \cite{froesefishbase2013} for all marine species available. Over-exploitation was defined by fishing levels of 80\% of the crash fishing mortality \cite{quinn1999quantitative} or five times the level of F$_{0.1}$ \cite{gullandF0.1}. 
+
+The results were integrated in an on-line application, using a database and a visualization tool that allows the users to search and download subsets of the data, as well as visualizing directly the performance for particular scenarios. Instead of presenting a massive amount of analysis in this paper the information can be easily analysed on-line or extracted. The information can be used to evaluate the performance of the model, but it can also be used as a starting point to carry out stock assessments, learn how to use the framework, etc. Ultimately it shows that it is possible to run a massive number of stock assessments and make the results available and manageable for those interested in meta analysis. 
+
+Note that all the analysis are carried out in R\footnote{R Core Team ...}, using the FLR\footnote{Kell et. al} libraries and the a4a package for the stock assessment model. The document is written in LaTeX using the R package knitr\footnote{REF}, which embeds the code in the document. The major advantage is allowing full replicability of the analysis and readers to check the code.
+
+This document is supplemental material to the paper Colin, et.al (2013) and shows the scenarios and code used for the simulation study 1.
+
+\section{Webscrap fishbase}
+
+<<echo=FALSE, message=FALSE, warning=FALSE>>=
+library(lattice)
+library(Hmisc)
+library(FLAdvice)
+source("funs.R")
+@
+
+<<eval=FALSE>>=
+library(FLCore)
+library(FLAdvice)
+library(rfishbase)
+library(longtable)
+library(XML)
+fish.data <- loadCache()
+
+#============================================================
+#' extract information in rfishbase
+#============================================================
+ids <- unlist(lapply(fish.data, "[", "id"))
+order <- unlist(lapply(fish.data, "[", "Order"))
+family <- unlist(lapply(fish.data, "[", "Family"))
+spp <- unlist(lapply(fish.data, "[", "ScientificName"))
+maxage <- getSize(fish.data, "age")
+maxlen <- getSize(fish.data, "length")
+maxwgt <- getSize(fish.data, "weight")
+mar <- vector("logical", length=length(ids))
+mar[grep("marine", unlist(lapply(fish.data, "[", "habitat")))] <- TRUE
+
+#============================================================
+#' init results dataframe with data from rfishbase
+#============================================================
+lhPars <- data.frame(id=ids, order=order, family=family, species=spp, marine=mar, a=NA, b=NA, k=NA, linf=NA, t0=NA, a50=NA, l50=NA, lmax=maxlen, amax=maxage, wmax=maxwgt, stringsAsFactors=FALSE)
+
+#============================================================
+#' scrap
+#============================================================
+for(i in ids){
+	cat(i, ";")
+	#--------------------------------------------------------
+	#' growth
+	#--------------------------------------------------------
+	addr <- paste("http://www.fishbase.org/PopDyn/PopGrowthList.php?ID=",i, sep="")
+	tab <- try(readHTMLTable(addr))
+	if(is(tab, "try-error")) tab$dataTable <- NULL
+	if(!is.null(tab$dataTable)){
+		# linf
+		v <- as.character(tab$dataTable[,"Loo(cm)"])
+		for(j in 1:length(v)){
+			vj <- v[j]
+			vj <- utf8ToInt(vj)
+			v[j] <- intToUtf8(vj[vj>=46 & vj<=57])
+		}
+		lhPars[lhPars$id==i, "linf"] <- median(as.numeric(v), na.rm=T)
+		# k
+		v <- as.character(tab$dataTable[,"K(1/y)"])
+		for(j in 1:length(v)){
+			vj <- v[j]
+			vj <- utf8ToInt(vj)
+			v[j] <- intToUtf8(vj[vj>=46 & vj<=57])
+		}
+		lhPars[lhPars$id==i, "k"] <- median(as.numeric(v), na.rm=T)
+		# t0
+		v <- as.character(tab$dataTable[,"to(years)"])
+		for(j in 1:length(v)){
+			vj <- v[j]
+			vj <- utf8ToInt(vj)
+			v[j] <- intToUtf8(vj[vj>=46 & vj<=57])
+		}
+		lhPars[lhPars$id==i, "t0"] <- median(as.numeric(v), na.rm=T)
+	}
+	#--------------------------------------------------------
+	#' maturity
+	#--------------------------------------------------------
+	addr <- paste("http://www.fishbase.org/Reproduction/MaturityList.php?ID=",i, sep="")
+	tab <- try(readHTMLTable(addr))
+	if(is(tab, "try-error")) tab$dataTable <- NULL
+	if(!is.null(tab$dataTable)){
+		# l50
+		v <- as.character(tab$dataTable[,"Lm(cm)"])
+		for(j in 1:length(v)){
+			vj <- v[j]
+			vj <- utf8ToInt(vj)
+			v[j] <- intToUtf8(vj[vj>=46 & vj<=57])
+		}
+		lhPars[lhPars$id==i, "l50"] <- median(as.numeric(v), na.rm=T)
+		# a50
+		v <- as.character(tab$dataTable[,8])
+		for(j in 1:length(v)){
+			vj <- v[j]
+			vj <- utf8ToInt(vj)
+			v[j] <- intToUtf8(vj[vj>=46 & vj<=57])
+		}
+		lhPars[lhPars$id==i, "a50"] <- median(as.numeric(v), na.rm=T)
+	}
+	#--------------------------------------------------------
+	#' l~w
+	#--------------------------------------------------------
+	addr <- paste("http://www.fishbase.org/PopDyn/LWRelationshipList.php?ID=",i, sep="")
+	tab <- try(readHTMLTable(addr))
+	if(is(tab, "try-error")) tab$dataTable <- NULL else names(tab)[3] <- "dataTable"
+	if(!is.null(tab$dataTable)){
+		# a
+		v <- as.character(tab$dataTable[,2])
+		for(j in 1:length(v)){
+			vj <- v[j]
+			vj <- utf8ToInt(vj)
+			v[j] <- intToUtf8(vj[vj>=46 & vj<=57])
+		}
+		lhPars[lhPars$id==i, "a"] <- median(as.numeric(v), na.rm=T)
+		# b
+		v <- as.character(tab$dataTable[,3])
+		for(j in 1:length(v)){
+			vj <- v[j]
+			vj <- utf8ToInt(vj)
+			v[j] <- intToUtf8(vj[vj>=46 & vj<=57])
+		}
+		lhPars[lhPars$id==i, "b"] <- median(as.numeric(v), na.rm=T)
+	}
+}
+@
+
+<<eval=FALSE>>=
+#============================================================
+#' cleaning & replacing missing values
+#============================================================
+lhMar <- subset(lhPars, marine==TRUE)
+lhMar[lhMar==0] <- NA
+#------------------------------------------------------------
+#' remove sea horses
+#------------------------------------------------------------
+lhMar01 <- subset(lhMar, !(is.na(a) | is.na(b) | is.na(k) | is.na(linf)) & order!="Syngnathiformes")
+#------------------------------------------------------------
+#' id those that were observations
+#------------------------------------------------------------
+lhMar01$l50obs <- !is.na(lhMar01$l50)
+lhMar01$a50obs <- !is.na(lhMar01$a50)
+lhMar01$amaxobs <- !is.na(lhMar01$amax)
+lhMar01$t0obs <- !is.na(lhMar01$t0)
+lhMar01 <- transform(lhMar01, obs=(l50obs+a50obs+amaxobs+t0obs)>0) 
+@
+
+<<eval=FALSE>>=
+#============================================================
+#' estimate missing values for l50, a50 and amax
+#============================================================
+rlm01 <- rlm(log(l50)~log(linf), data=subset(lhMar01, linf<300))
+lhMar01[is.na(lhMar01$l50),"l50"] <- exp(predict(rlm01, newdata = data.frame(linf = lhMar01[is.na(lhMar01$l50),"linf"])) + rnorm(sum(is.na(lhMar01$l50)), 0, sd(residuals(rlm01)))) 
+
+rlm02 <- rlm(log(t0)~log(k), data=subset(lhMar01, linf<300))
+lhMar01[is.na(lhMar01$t0),"t0"] <- exp(predict(rlm02, newdata = data.frame(k = lhMar01[is.na(lhMar01$t0),"k"])) + rnorm(sum(is.na(lhMar01$t0)), 0, sd(residuals(rlm02)))) 
+
+rlm03 <- rlm(log(amax)~log(linf), data=lhMar01)
+lhMar01[is.na(lhMar01$amax),"amax"] <- exp(predict(rlm03, newdata = data.frame(linf = lhMar01[is.na(lhMar01$amax),"linf"])) + rnorm(sum(is.na(lhMar01$amax)), 0, sd(residuals(rlm03)))) 
+
+vv <- -log(1 - (lhMar01$l50/lhMar01$linf))/lhMar01$k + lhMar01$t0
+lhMar01[is.na(lhMar01$a50),"a50"] <- vv[is.na(lhMar01$a50)] 
+@
+
+<<echo=FALSE>>=
+load("lhMar01.rdata")
+@
+
+<<echo=FALSE, fig=TRUE, fig.height=9, fig.width=9, fig.cap="Scrapped values and linear model estimates to replace missing values", fig.pos="H">>=
+splom(lhMar01[,c(8:14)], groups=1-lhMar01$obs, pch=19, cex=0.2, auto.key=list(column=2))
+@
+
+<<>>=
+#------------------------------------------------------------
+#' variables from fishbase
+#------------------------------------------------------------
+names(lhMar01)
+#------------------------------------------------------------
+#' number of species
+#------------------------------------------------------------
+nrow(lhMar01)
+@
+
+\section{Scenarios}
+
+For each species the following scenarios were simulated.
+
+<<>>=
+#------------------------------------------------------------
+#' Operating models
+#------------------------------------------------------------
+#' stock recruitment models
+srMod <- c("bevholt", "ricker") 
+#' steepness of stock recruitment relationship 
+s <- c(0.8, 0.6)
+#' age of 50% selectivity (maximum of double normal model) 
+a1 <- c(0.7, 1) # relative to a50
+#' variance of the right half of the double normal 
+sr <- c(1,100)
+#' variance of the left half of the double normal 
+sl <- c(1,100)
+
+#------------------------------------------------------------
+#' Observation error
+#------------------------------------------------------------
+#' coefficient of variation for catch at age lognormal errors
+oe.ccv <- c(0.1,0.3)
+#' coefficient of variation for index at age lognormal errors
+oe.icv <- c(0.2,0.5)
+#' linear increase by year for index catchability
+oe.iq <- c(1,1.05) # technical creep, q = 0.01
+@
+
+<<echo=FALSE>>=
+simDesign <- expand.grid(srMod=srMod, s=s, a1=a1, sr=sr, sl=sl, oe.icv=oe.icv, oe.iq=oe.iq, oe.ccv=oe.ccv)
+# remove flat sel with a1=0.7, it's the same if a1=1
+simDesign <- subset(simDesign, !(sr==100 & sl==100 & a1==0.7))
+# remove a50 NAs
+df0 <- subset(lhMar01, !is.na(a50))
+sD <- merge(df0, simDesign)
+@
+
+Scenarios with flat selectivity and a1=0.7 were removed once a1 has no effect. Also cases that end up with missing values in the age of 50\% mature fish were removed. Finally the number of scenarios were \Sexpr{nrow(simDesign)} that when merged with the species and for each combination five exploitation histories were simulated, giving raise to approximately \Sexpr{round(nrow(sD)*5/1000000,2)} million simulations.
+
+\section{Model fit}
+
+Afterwards a set of models were built, considering the most common options used in stock assessment (see below) which generate a total of 30 combinations. For each simulation one of these combinations was allocated randomly to be used in the model fit.
+
+<<echo=FALSE>>=
+subm <- c(rep("fishery", 3), rep("catchability", 5), rep("recruitment", 2))
+mods <- c("fm1", "fm2", "fm3", "qm0", "qm1", "qm2", "qm3", "qm4", "rm1", "rm2")
+desc <- c(deparse(faymod()), deparse(baymod(na=4, ny=10)), deparse(temod(na=4, ny=15)), deparse(mod0()), deparse(amod()), deparse(famod()), deparse(bamod(na=4)), deparse(baymod(na=4, ny=15)), deparse(fymod()), deparse(bymod(ny=15))) 
+df0 <- data.frame(subMod=subm, modCode=mods, modDesc=desc)	
+@
+
+<<echo=FALSE, results="asis">>=
+latex(df0, longtable=FALSE, file="", caption="Sub-models used for fitting.", rowname=NULL, where="H", colheads=c("submodel", "code", "formula"), first.hline.double=FALSE)
+@
+
+\section{Results}
+
+The results are made available on a dedicated web page on the a4a website. The page accesses a database with all the results and provides visualization and exporting tools.
+
+\subsection{Export file data structure}
+
+The data is split in two tables, "stats" and "summs". The first has summary stats of the tests. Table "stats" is linked one to many with table "summs", which has summaries of the stock assessment fits. Both tables have the field "scnid", which is the scenario identification field. The scenario identification kwy is build by concatenating other fields, which are identified by the string "scnid" in bold. This field can be used to link both tables. 
+
+\subsubsection{Table "stats" fields}
+
+\begin{itemize}
+	\item scenario parameters
+	\begin{itemize}
+		\item order, text, taxon order, 
+		\item family, text, taxon family, 
+		\item species, text, taxon species, {\bf scnid}
+		\item marine, bolean, marine species or not,
+		\item a, numeric, parameter of the weight-length relationship,
+		\item b, numeric, parameter of the weight-length relationship,
+		\item k, numeric, parameter of the von Bertalanffy growth model,
+		\item linf, numeric, parameter of the von Bertalanffy growth model,
+		\item t0, numeric, parameter of the von Bertalanffy growth model,
+		\item a50, numeric, age of 50\% maturity, 
+		\item l50, numeric, length of 50\% maturity, 
+		\item amax, numeric, maximum age, 
+		\item lmax, numeric, maximum length, 
+		\item wmax, numeric, maximum weight, 
+		\item l50obs, bolean, was l50 observed or not,
+		\item a50obs, bolean, was a50 observed or not,
+		\item amaxobs, bolean, was amax observed or not,
+		\item t0obs, bolean, was t0 observed or not,
+		\item obs, ignore,,
+		\item srMod, text, stock-recruitment model, {\bf scnid}
+		\item s, numeric, steepness parameter of the stock-recruitment curve, {\bf scnid}
+		\item v, numeric, virgin biomass parameter of the stock-recruitment curve, {\bf scnid}
+		\item a1, numeric, age of 50\% selectivity parameter of the selectivity double normal model, {\bf scnid}
+		\item sr, numeric, right variance parameter of the selectivity double normal model, {\bf scnid}
+		\item sl, numeric, left variance parameter of the selectivity double normal model, {\bf scnid}
+		\item oe.icv, numeric, abundance index coefficient of variation parameter of the observation error model, {\bf scnid}
+		\item oe.iq, numeric, abundance index catchability increase parameter of the observation error model, {\bf scnid}
+		\item oe.ccv, numeric, catch at age coefficient of variation parameter of the observation error model, {\bf scnid}
+		\item qmodel, text, catchability model, {\bf scnid}
+		\item rmodel, text, recruitment model, {\bf scnid}
+		\item fmodel, text, fishing mortality model, {\bf scnid}
+		\item fmsy, numeric, fmsy fishing mortality reference point,
+		\item f0.1, numeric, f0.1 fishing mortality reference point,
+		\item m, numeric, natural mortality average over age range, 
+		\item expl, numeric, exploitation history pattern, {\bf scnid}
+	\end{itemize}
+	\item fitting statistics
+	\begin{itemize}
+		\item nopar, numeric, number of model parameters, 
+		\item nlogl, numeric, negative log likelihood of the fit,
+		\item maxgrad, numeric, maximum gradient of the negative log likelihood surface,
+		\item npar, ignore,, 
+		\item logDetHess, ignore,,
+	\end{itemize}
+	\item comparison statistics
+	\begin{itemize}
+		\item ssbrbias, numeric, SSB relative bias, 
+		\item ssbmse, numeric, SSB mean square error,
+		\item fbarrbias, numeric, fishing mortality relative bias,
+		\item fbarmse, numeric, fishing mortality mean square error,
+		\item recrbias, numeric, recruitment relative bias,
+		\item recmse, numeric, recruitment mean square error,
+		\item catrbias, numeric, catch relative bias,
+		\item catmse, numeric, catch mean square error,
+		\item qrbias, numeric, catchability relative bias,
+		\item qmse, numeric, catchability mean square error,
+	\end{itemize}
+		\item scnid, text, scenario id, 
+		\item dynid, text, population dynamics id, 
+\end{itemize}
+
+
+\subsubsection{Table "stats" fields}
+
+\begin{itemize}
+	\item comparison time series
+	\begin{itemize}
+		\item y, numeric, year,
+		\item stat, text, statistic with values "S" (spawning stock biomass) "F" (fishing mortality) "R" (recruitment) or "C" (catch),
+		\item src, text, source of information with values "obs" (observed/simulated) or "hat" (estimated)
+		\item val, numeric, value
+	\end{itemize}
+	\item scnid, text, scenario id, 
+	\item dynid, text, population dynamics id, 
+\end{itemize}
+
+\bibliography{a4a-model-plos-template.bib}
+
+\end{document}
+
